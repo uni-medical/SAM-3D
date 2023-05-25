@@ -27,6 +27,7 @@ class NIIDataset_Union_ALL(Dataset):
             image = tio.ScalarImage(self.image_paths[index]),
             label = tio.LabelMap(self.label_paths[index]),
         )
+        subject.label.set_data(subject.label.data.type(torch.uint8))
         if subject.label.data.sum() == 0:
             self.image_paths.remove(self.image_paths[index])
             self.label_paths.remove(self.label_paths[index])
@@ -47,8 +48,8 @@ class NIIDataset_Union_ALL(Dataset):
         selected_value = labels_num[nonzero_indices[random_index]]
         # 输出结果
         return_label_num = selected_value.item()
-        return_label[return_label != return_label_num] == 0
-        return_label[return_label == return_label_num] == 1
+        return_label[return_label != return_label_num] = 0
+        return_label[return_label == return_label_num] = 1
         
         ############################ get two class ############################
         subject.add_image(tio.LabelMap(tensor=return_label,
@@ -56,12 +57,10 @@ class NIIDataset_Union_ALL(Dataset):
                             image_name="crop_mask")
 
         # if subject.crop_mask.data.sum() == 0:
-        if return_label.sum() == 0:
+        if return_label.sum() < 100:
             # print('===========================')
             # print(self.label_paths[index])
             # print('===========================')
-            self.image_paths.remove(self.image_paths[index])
-            self.label_paths.remove(self.label_paths[index])
             return self.__getitem__(np.random.randint(self.__len__()))
         
         if self.transform:
@@ -74,17 +73,13 @@ class NIIDataset_Union_ALL(Dataset):
                 # print(subject.label.data.shape)
                 # print(self.image_paths[index])
                 # print('===============================')
-                self.image_paths.remove(self.image_paths[index])
-                self.label_paths.remove(self.label_paths[index])
                 return self.__getitem__(np.random.randint(self.__len__()))
         # return torch.tensor(img_embed).float(), torch.tensor(gt2D[None, :,:]).long()  # , torch.tensor(bboxes).float()
         # return self.image_paths[index], subject.image.data.float(), subject.label.data[0, ...]
         final_return_image = subject.image.data.clone().detach()
         final_return_label = subject.crop_mask.data.clone().detach()
         
-        if final_return_label.sum() == 0:
-            self.image_paths.remove(self.image_paths[index])
-            self.label_paths.remove(self.label_paths[index])
+        if final_return_label.sum() < 100:
             return self.__getitem__(np.random.randint(self.__len__()))
         
         return final_return_image, final_return_label # , self.image_paths[index]
