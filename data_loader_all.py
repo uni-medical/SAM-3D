@@ -27,8 +27,9 @@ class NIIDataset_Union_ALL(Dataset):
             image = tio.ScalarImage(self.image_paths[index]),
             label = tio.LabelMap(self.label_paths[index]),
         )
+        subject.image.set_data(subject.image.data.type(torch.float32))
         subject.label.set_data(subject.label.data.type(torch.uint8))
-        if subject.label.data.sum() == 0:
+        if subject.label.data.sum() < 500:
             self.image_paths.remove(self.image_paths[index])
             self.label_paths.remove(self.label_paths[index])
             return self.__getitem__(np.random.randint(self.__len__()))
@@ -57,7 +58,7 @@ class NIIDataset_Union_ALL(Dataset):
                             image_name="crop_mask")
 
         # if subject.crop_mask.data.sum() == 0:
-        if return_label.sum() < 100:
+        if return_label.sum() < 500:
             # print('===========================')
             # print(self.label_paths[index])
             # print('===========================')
@@ -79,7 +80,7 @@ class NIIDataset_Union_ALL(Dataset):
         final_return_image = subject.image.data.clone().detach()
         final_return_label = subject.crop_mask.data.clone().detach()
         
-        if final_return_label.sum() < 100:
+        if final_return_label.sum() < 500:
             return self.__getitem__(np.random.randint(self.__len__()))
         
         return final_return_image, final_return_label # , self.image_paths[index]
