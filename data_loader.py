@@ -27,8 +27,8 @@ class NIIDataset_Union_ALL(Dataset):
         if self.transform:
             subject = self.transform(subject)
         
-        if subject.label.data.sum() < 1000:
-            return self.__getitem__(np.random.randint(self.__len__()))
+        # if subject.label.data.sum() < 1000:
+        #     return self.__getitem__(np.random.randint(self.__len__()))
 
         return subject.image.data.clone().detach(), subject.label.data.clone().detach() # , self.image_paths[index]
     

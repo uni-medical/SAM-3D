@@ -9,4 +9,4 @@ export PATH=/cpfs01/user/guosizheng/anaconda3/bin:$PATH
 cd /cpfs01/user/guosizheng/union_train_sam3D/
 source ../.bashrc
 conda activate medsam
-python train3D_sam_alldata_11click.py --task_name union_train_11click_test --click_type random --multi_click --gpu_ids 0 1 --multi_gpu
+python train.py --task_name union_train_11click_test --click_type random --multi_click --gpu_ids 0 1 --multi_gpu

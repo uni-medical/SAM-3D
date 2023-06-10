@@ -63,6 +63,61 @@ def load_sam_2d_weight(model_2d_path, model_3d):
 
 def get_next_click3D_torch(prev_seg, gt_semantic_seg):
 
+    # def compute_dice(mask_pred, mask_gt):
+    #     mask_threshold = 0.5
+
+    #     mask_pred = (mask_pred > mask_threshold)
+    #     # mask_gt = mask_gt.astype(bool)
+    #     mask_gt = (mask_gt > 0)
+        
+    #     volume_sum = mask_gt.sum() + mask_pred.sum()
+    #     if volume_sum == 0:
+    #         return np.NaN
+    #     volume_intersect = (mask_gt & mask_pred).sum()
+    #     return 2*volume_intersect / volume_sum
+
+    mask_threshold = 0.5
+
+    batch_points = []
+    batch_labels = []
+    # dice_list = []
+
+    pred_masks = (prev_seg > mask_threshold)
+    true_masks = (gt_semantic_seg > 0)
+    fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
+    fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
+
+
+    for i in range(gt_semantic_seg.shape[0]):
+
+        fn_points = torch.argwhere(fn_masks[i])
+        fp_points = torch.argwhere(fp_masks[i])
+        if len(fn_points) > 0 and len(fp_points) > 0:
+            if np.random.random() > 0.5:
+                point = fn_points[np.random.randint(len(fn_points))]
+                is_positive = True
+            else:
+                point = fp_points[np.random.randint(len(fp_points))]
+                is_positive = False
+        elif len(fn_points) > 0:
+            point = fn_points[np.random.randint(len(fn_points))]
+            is_positive = True
+        elif len(fp_points) > 0:
+            point = fp_points[np.random.randint(len(fp_points))]
+            is_positive = False
+        # bp = torch.tensor(point[1:]).reshape(1,1,3) 
+        bp = point[1:].clone().detach().reshape(1,1,3) 
+        bl = torch.tensor([int(is_positive),]).reshape(1,1)
+        batch_points.append(bp)
+        batch_labels.append(bl)
+        # dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
+
+    return batch_points, batch_labels # , (sum(dice_list)/len(dice_list)).item()    
+
+
+
+def get_next_click3D_torch_with_dice(prev_seg, gt_semantic_seg):
+
     def compute_dice(mask_pred, mask_gt):
         mask_threshold = 0.5
 
@@ -131,5 +186,4 @@ def show_point(point, label, ax):
     else:
         ax.add_patch(plt.Circle((point[1], point[0]), 1, color='green'))
     # plt.scatter(point[0], point[1], label=label)
-
 

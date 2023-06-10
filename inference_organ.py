@@ -21,7 +21,6 @@ import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-cp', '--checkpoint_path', type=str, default='./work_dir/SAM-ViT-B_multi_choose/sam_model_latest.pth')
-parser.add_argument('-dt', '--data_type', type=str, default='Ts')
 parser.add_argument('-pm', '--point_method', type=str, default='random')
 parser.add_argument('--multi', action='store_true', default=False)
 parser.add_argument('--union', action='store_true', default=False)
@@ -138,9 +137,8 @@ def finetune_model_predict3D(img3D, gt3D, sam_trans, sam_model_tune, device='cud
     return pred_list, points_co.cpu().numpy(), points_la.cpu().numpy(), iou_list, dice_list
 
 class NIIDataset_Union_ALL(Dataset): 
-    def __init__(self, paths, data_type='Ts', image_size=128, transform=None):
+    def __init__(self, paths, image_size=128, transform=None):
         self.paths = paths
-        self.data_type = data_type
 
         self._set_file_paths(self.paths)
         self.image_size = image_size
@@ -182,20 +180,7 @@ class NIIDataset_Union_ALL(Dataset):
 # train_dataset = NIIDataset_Val(path='./dataset/MSD01_BrainTumor_flair', transform=tio.Compose(
 train_dataset = NIIDataset_Union_ALL(
     paths=args.test_organ, 
-    # paths=img_datas,
-    data_type=args.data_type, 
-    transform=tio.Compose([
-        # tio.ToCanonical(),
-        # tio.Resample(1),
-        # tio.Resize((160,160,160)),
-        # tio.CropOrPad(mask_name='crop_mask', target_shape=(256,256,256)), # crop only object region
-        # tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)),
-        # tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
-        tio.KeepLargestComponent(),
-        # tio.RandomFlip(axes=(0, 1, 2)),
-        # tio.RemapLabels({2:1, 3:1}),
-    ]
-))
+)
 
 train_dataloader = DataLoader(
     dataset=train_dataset,

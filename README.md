@@ -5,7 +5,7 @@
 Train:
 
 ```bash
-python train3D_sam_alldata_11click.py 
+python train.py 
 		--task_name your_task_name 
 		--click_type random  # 取点方式
 		--multi_click  # 是否是多个点击

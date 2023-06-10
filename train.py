@@ -31,10 +31,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 torch.manual_seed(2023)
 np.random.seed(2023)
 
-
 # %% set up parser
 parser = argparse.ArgumentParser()
-parser.add_argument('--task_name', type=str, default='Union_SAM-ViT-B_multi_random_using2dweight_multigpu')
+parser.add_argument('--task_name', type=str, default='best_train')
 parser.add_argument('--click_type', type=str, default='random')
 parser.add_argument('--multi_click', action='store_true', default=False)
 parser.add_argument('--model_type', type=str, default='vit_b_ori')
@@ -43,6 +42,7 @@ parser.add_argument('--device', type=str, default='cuda')
 parser.add_argument('--work_dir', type=str, default='./work_dir')
 # parser.add_argument('--data_dir', type=str, default='/cpfs01/user/guosizheng/SAM3D/dataset/MSD01_BrainTumor_flair')
 # parser.add_argument('--log_out_dir', type=str, default='./work_dir/MSD01_BrainTumor_flair')
+# parser.add_argument('--load_weights_only')
 
 # train
 parser.add_argument('--num_workers', type=int, default=32)
@@ -51,7 +51,7 @@ parser.add_argument('--multi_gpu', action='store_true', default=False)
 
 
 # lr_scheduler
-parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
+# parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
 # parser.add_argument('--warmup_epochs', type=int, default=0)
 # parser.add_argument('--warmup_factor', type=float, default=1e-6)
 # parser.add_argument('--warmup_method', type=str, default='linear')
@@ -61,13 +61,15 @@ parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
 # parser.add_argument('--min_lr', type=float, default=1e-6)
 # parser.add_argument('--step_size', type=int, default=5)
 # parser.add_argument('--gamma', type=float, default=0.5)
-parser.add_argument('--step_size', type=list, default=[600, 900])
+parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
+parser.add_argument('--step_size', type=list, default=[60, 90])
 parser.add_argument('--gamma', type=float, default=0.1)
 
 
-parser.add_argument('--num_epochs', type=int, default=1000)
+parser.add_argument('--num_epochs', type=int, default=50)
 parser.add_argument('--img_size', type=int, default=128)
 parser.add_argument('--batch_size', type=int, default=12)
+parser.add_argument('--accumulation_steps', type=int, default=20)
 parser.add_argument('--lr', type=float, default=8e-4)
 parser.add_argument('--weight_decay', type=float, default=0.1)
 
@@ -77,6 +79,8 @@ parser.add_argument('--weight_decay', type=float, default=0.1)
 parser.add_argument('--port', type=int, default=12361)
 
 args = parser.parse_args()
+
+# %% set up logger
 
 ###################################### Logging ######################################
 import datetime
@@ -96,6 +100,7 @@ logging.basicConfig(
 
 # args.multi_gpu = True
 
+# %% set up click methods
 ###################################### Click type ######################################
 from utils import load_sam_2d_weight, get_next_click3D_torch
 click_methods = {
@@ -105,7 +110,7 @@ click_methods = {
 ###################################### Click type ######################################
 
 
-# set up model for fine-tuning 
+# %% set up model for fine-tuning 
 device = args.device
 MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
 os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
@@ -121,19 +126,21 @@ def build_model(args):
     # sam_model.train()
     return sam_model
 
+# %% set up dataloader
 ################################################## Data ##################################################
 # from dataloader_part import NIIDataset_Union, img_datas
-from data_loader_all import NIIDataset_Union_ALL
-from all_data_paths_py import img_datas
+from data_loader import NIIDataset_Union_ALL
+# from data_paths import img_datas
+from data_paths import img_datas
 
 def get_dataloaders(args):
     train_dataset = NIIDataset_Union_ALL(paths=img_datas, transform=tio.Compose([
-        tio.ToCanonical(),
-        tio.Resample(1),
-        tio.Resize((128,128,128)),
-        tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)), # crop only object region
-        tio.KeepLargestComponent(label_keys='crop_mask'),
-        tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
+        # tio.ToCanonical(),
+        # tio.Resample(1),
+        # tio.Resize((128,128,128)),
+        # tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)), # crop only object region
+        # tio.KeepLargestComponent(),
+        # tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
         tio.RandomFlip(axes=(0, 1, 2)),
         # tio.RemapLabels({2:1, 3:1}),
     ]))
@@ -157,6 +164,7 @@ def get_dataloaders(args):
 ################################################## Data ##################################################
 
 
+# %% set up trainer
 ########################################## Trainer ##########################################
 
 class BaseTrainer:
@@ -190,9 +198,9 @@ class BaseTrainer:
             sam_model = self.model
 
         self.optimizer = torch.optim.AdamW([
-            {'params': sam_model.image_encoder.parameters()},# , 'lr': self.args.lr * 1.0},
-            {'params': sam_model.prompt_encoder.parameters()},
-            {'params': sam_model.mask_decoder.parameters()},
+            {'params': sam_model.image_encoder.parameters()}, # , 'lr': self.args.lr * 0.1},
+            {'params': sam_model.prompt_encoder.parameters() , 'lr': self.args.lr * 0.1},
+            {'params': sam_model.mask_decoder.parameters(), 'lr': self.args.lr * 0.1},
         ], lr=self.args.lr, betas=(0.9,0.999), weight_decay=self.args.weight_decay)
 
     def set_lr_scheduler(self):
@@ -221,14 +229,14 @@ class BaseTrainer:
                 self.model.module.load_state_dict(last_ckpt['model_state_dict'])
             else:
                 self.model.load_state_dict(last_ckpt['model_state_dict'])
-            # self.start_epoch = last_ckpt['epoch']
-            self.start_epoch = 0
-            # self.optimizer.load_state_dict(last_ckpt['optimizer_state_dict'])
-            # self.lr_scheduler.load_state_dict(last_ckpt['lr_scheduler_state_dict'])
-            # self.losses = last_ckpt['losses']
-            # self.dices = last_ckpt['dices']
-            # self.best_loss = last_ckpt['best_loss']
-            # self.best_dice = last_ckpt['best_dice']
+            # self.start_epoch = 0 
+            self.start_epoch = last_ckpt['epoch']
+            self.optimizer.load_state_dict(last_ckpt['optimizer_state_dict'])
+            self.lr_scheduler.load_state_dict(last_ckpt['lr_scheduler_state_dict'])
+            self.losses = last_ckpt['losses']
+            self.dices = last_ckpt['dices']
+            self.best_loss = last_ckpt['best_loss']
+            self.best_dice = last_ckpt['best_dice']
             print(f"Loaded checkpoint from {ckp_path} (epoch {self.start_epoch})")
         else:
             self.start_epoch = 0
@@ -248,6 +256,89 @@ class BaseTrainer:
             "used_datas": img_datas,
         }, join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"))
     
+    def batch_forward(self, sam_model, image_embedding, gt3D, low_res_masks, points=None):
+        sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
+            points=points,
+            boxes=None,
+            masks=low_res_masks,
+        )
+        low_res_masks, iou_predictions = sam_model.mask_decoder(
+            image_embeddings=image_embedding.to(device), # (B, 256, 64, 64)
+            image_pe=sam_model.prompt_encoder.get_dense_pe(), # (1, 256, 64, 64)
+            sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 256)
+            dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
+            multimask_output=False,
+        )
+        prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode='trilinear', align_corners=False)
+        return low_res_masks, prev_masks
+
+    def get_points(self, prev_masks, gt3D):
+        # batch_points, batch_labels, dice = click_methods[self.args.click_type](prev_masks, gt3D)
+        batch_points, batch_labels = click_methods[self.args.click_type](prev_masks, gt3D)
+
+        points_co = torch.cat(batch_points, dim=0).to(device)
+        points_la = torch.cat(batch_labels, dim=0).to(device)
+
+        self.click_points.append(points_co)
+        self.click_labels.append(points_la)
+
+        points_multi = torch.cat(self.click_points, dim=1).to(device)
+        labels_multi = torch.cat(self.click_labels, dim=1).to(device)
+
+        if self.args.multi_click:
+            points_input = points_multi
+            labels_input = labels_multi
+        else:
+            points_input = points_co
+            labels_input = points_la
+        return points_input, labels_input # , dice
+
+    def interaction(self, sam_model, image_embedding, gt3D, num_clicks):
+        return_loss = 0
+        prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
+        low_res_masks = F.interpolate(prev_masks.float(), size=(args.img_size//4,args.img_size//4,args.img_size//4))
+        random_insert = np.random.randint(0, num_clicks)
+        for num_click in range(num_clicks):
+            # points_input, labels_input, dice = self.get_points(prev_masks, gt3D)
+            
+            points_input, labels_input = self.get_points(prev_masks, gt3D)
+            # if num_click < num_clicks - 1:
+            #     with torch.no_grad():
+            #         low_res_masks, prev_masks = self.batch_forward(sam_model, image_embedding, gt3D, low_res_masks, points=[points_input, labels_input])
+            # else:
+            if num_click == random_insert:
+                low_res_masks, prev_masks = self.batch_forward(sam_model, image_embedding, gt3D, low_res_masks, points=None)
+            else:
+                low_res_masks, prev_masks = self.batch_forward(sam_model, image_embedding, gt3D, low_res_masks, points=[points_input, labels_input])
+            loss = self.seg_loss(prev_masks, gt3D)
+            return_loss += loss
+        return prev_masks, return_loss
+        # return prev_masks
+    
+    def get_dice_score(self, prev_masks, gt3D):
+        def compute_dice(mask_pred, mask_gt):
+            mask_threshold = 0.5
+
+            mask_pred = (mask_pred > mask_threshold)
+            # mask_gt = mask_gt.astype(bool)
+            mask_gt = (mask_gt > 0)
+            
+            volume_sum = mask_gt.sum() + mask_pred.sum()
+            if volume_sum == 0:
+                return np.NaN
+            volume_intersect = (mask_gt & mask_pred).sum()
+            return 2*volume_intersect / volume_sum
+    
+        pred_masks = (prev_masks > 0.5)
+        true_masks = (gt3D > 0)
+        dice_list = []
+        for i in range(true_masks.shape[0]):
+            dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
+            # dice = compute_dice(pred_masks[i], true_masks[i])
+            # print(f'dice: {dice}')
+        return (sum(dice_list)/len(dice_list)).item() 
+        
+
     def train_epoch(self, epoch, num_clicks):
         epoch_loss = 0
         epoch_iou = 0
@@ -257,8 +348,19 @@ class BaseTrainer:
             sam_model = self.model.module
         else:
             sam_model = self.model
+        
+        # tbar = tqdm(self.dataloaders)  if ((self.args.multi_gpu and self.args.rank == 0) or not self.args.multi_gpu) else self.dataloaders
+        if not self.args.multi_gpu or (self.args.multi_gpu and self.args.rank == 0):
+            tbar = tqdm(self.dataloaders)
+        else:
+            tbar = self.dataloaders
+
+        # loss = 0
         # Just train on the first 20 examples
-        for step, (image3D, gt3D) in enumerate(tqdm(self.dataloaders)):
+        self.optimizer.zero_grad()
+        step_loss = 0
+        # step_dice = 0
+        for step, (image3D, gt3D) in enumerate(tbar):
 
             image3D = self.norm_transform(image3D.squeeze(dim=1)) # (N, C, W, H, D)
             image3D = image3D.unsqueeze(dim=1)
@@ -270,104 +372,60 @@ class BaseTrainer:
             image_embedding = sam_model.image_encoder(image3D)
 
             # click points存储在点击数量上的点坐标（例如每个batch有4个，则其中每个数据就是(4,1,3)的维度）
-            click_points = []
-            click_labels = []
+            self.click_points = []
+            self.click_labels = []
 
             pred_list = []
 
-            loss = 0
-
-            # random_insert = np.random.randint(1, 10)
-            random_insert = num_clicks
             # do not compute gradients for image encoder and prompt encoder
-            for num_click in range(11):
-                cur_loss = 0
-                if num_click == 0:
-                    prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
-                    low_res_masks = F.interpolate(prev_masks.float(), size=(args.img_size//4,args.img_size//4,args.img_size//4))
-                elif num_click == random_insert or num_click == 10:
-                    sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
-                        points=None,
-                        boxes=None,
-                        masks=low_res_masks,
-                    )
-                    low_res_masks, iou_predictions = sam_model.mask_decoder(
-                        image_embeddings=image_embedding.to(device), # (B, 256, 64, 64)
-                        image_pe=sam_model.prompt_encoder.get_dense_pe(), # (1, 256, 64, 64)
-                        sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 256)
-                        dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
-                        multimask_output=False,
-                    )
-                    prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode='trilinear', align_corners=False)
-                    continue
-                else:
-                    low_res_masks = low_res_masks
-                    prev_masks = prev_masks
-                # batch_points存储在batch维度上的点坐标（其中每个是(1,1,3)的维度）
-                batch_points, batch_labels, dice = click_methods[args.click_type](prev_masks, gt3D)
-
-                points_co = torch.cat(batch_points, dim=0).to(device)
-                points_la = torch.cat(batch_labels, dim=0).to(device)
-
-                click_points.append(points_co)
-                click_labels.append(points_la)
-
-                points_multi = torch.cat(click_points, dim=1).to(device)
-                labels_multi = torch.cat(click_labels, dim=1).to(device)
-
-                if self.args.multi_click:
-                    points_input = points_multi
-                    labels_input = labels_multi
-                else:
-                    points_input = points_co
-                    labels_input = points_la
-
-                sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
-                    points=[points_input, labels_input],
-                    # boxes=box_torch,
-                    boxes=None,
-                    masks=low_res_masks,
-                )
-                low_res_masks, iou_predictions = sam_model.mask_decoder(
-                    image_embeddings=image_embedding.to(device), # (B, 256, 64, 64)
-                    image_pe=sam_model.prompt_encoder.get_dense_pe(), # (1, 256, 64, 64)
-                    sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 256)
-                    dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
-                    multimask_output=False,
-                )
-                prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode='trilinear', align_corners=False)
-
-                cur_loss = self.seg_loss(prev_masks, gt3D) # + 2 * self.nfl_loss(prev_masks, gt3D)
+            # prev_masks = self.interaction(sam_model, image_embedding, gt3D, num_clicks)
+            # prev_masks = self.interaction(sam_model, image_embedding, gt3D, 10)
+            # loss = self.seg_loss(prev_masks, gt3D) # + 2 * self.nfl_loss(prev_masks, gt3D)
+            prev_masks, loss = self.interaction(sam_model, image_embedding, gt3D, 11)
             
-                loss += cur_loss
-
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-
             epoch_loss += loss.item()
-            epoch_dice += dice
+            
+            # epoch_dice.append(dice)
+
+            cur_loss = loss.item()
+            # cur_dice = dice
+
+            loss /= self.args.accumulation_steps
+            loss.backward()
+
+            if step % self.args.accumulation_steps == 0 and step != 0:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                print_loss = step_loss / self.args.accumulation_steps
+                step_loss = 0
+                # print_dice = step_dice / self.args.accumulation_steps
+                print_dice = self.get_dice_score(prev_masks, gt3D)
+                # step_dice = 0
+            else:
+                step_loss += cur_loss
+                # step_dice += cur_dice
+
 
             if not self.args.multi_gpu or (self.args.multi_gpu and self.args.rank == 0):
-                if step % 50 == 0:
-                    print(f'Epoch: {epoch}, Step: {step}, Loss: {loss.item()}, Dice: {dice}')
-                    if dice > self.step_best_dice:
-                        self.step_best_dice = dice
+                if step % self.args.accumulation_steps == 0 and step != 0:
+                    print(f'Epoch: {epoch}, Step: {step}, Loss: {print_loss}, Dice: {print_dice}')
+                    if print_dice > self.step_best_dice:
+                        self.step_best_dice = print_dice
                         self.save_checkpoint(
                             epoch,
                             sam_model.state_dict(),
-                            describe=f'{epoch}_step_dice_best'
+                            describe=f'{epoch}_step_dice:{print_dice}_best'
                         )
-                    if loss.item() < self.step_best_loss:
-                        self.step_best_loss = loss.item()
+                    if print_loss < self.step_best_loss:
+                        self.step_best_loss = print_loss
                         self.save_checkpoint(
                             epoch,
                             sam_model.state_dict(),
-                            describe=f'{epoch}_step_loss_best'
+                            describe=f'{epoch}_step_loss:{print_loss}_best'
                         )
             
         epoch_loss /= step
-        epoch_dice /= step
+        # epoch_dice /= step
         # epoch_iou /= step
 
         return epoch_loss, epoch_iou, epoch_dice, pred_list
@@ -398,7 +456,7 @@ class BaseTrainer:
                 self.dataloaders.sampler.set_epoch(epoch)
 
                 # sam_model = torch.nn.DataParallel(sam_model)
-            num_clicks = np.random.randint(1, 10)
+            num_clicks = np.random.randint(1, 21)
             epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch, num_clicks)
 
             if self.lr_scheduler is not None:

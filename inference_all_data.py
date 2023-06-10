@@ -158,8 +158,8 @@ class NIIDataset_Union_ALL(Dataset):
         if self.transform:
             subject = self.transform(subject)
         
-        if subject.label.data.sum() < 1000:
-            return self.__getitem__(np.random.randint(self.__len__()))
+        # if subject.label.data.sum() < 1000:
+        #     return self.__getitem__(np.random.randint(self.__len__()))
 
         return subject.image.data.clone().detach(), subject.label.data.clone().detach(), self.image_paths[index]
     
@@ -175,7 +175,7 @@ class NIIDataset_Union_ALL(Dataset):
                     self.image_paths.append(f"{path}/images{self.data_type}/{base}.nii.gz")
                     self.label_paths.append(f"{path}/labels{self.data_type}/{base}.nii.gz")
 
-from data_paths_no_rescale import img_datas
+from data_paths import img_datas
 
 # train_dataset = NIIDataset_Val(path='./dataset/MSD01_BrainTumor_flair', transform=tio.Compose(
 train_dataset = NIIDataset_Union_ALL(
@@ -189,7 +189,7 @@ train_dataset = NIIDataset_Union_ALL(
         # tio.CropOrPad(mask_name='crop_mask', target_shape=(256,256,256)), # crop only object region
         # tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)),
         # tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
-        tio.KeepLargestComponent(),
+        # tio.KeepLargestComponent(),
         # tio.RandomFlip(axes=(0, 1, 2)),
         # tio.RemapLabels({2:1, 3:1}),
     ]

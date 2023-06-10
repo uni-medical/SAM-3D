@@ -26,7 +26,7 @@ parser.add_argument('-pm', '--point_method', type=str, default='random')
 parser.add_argument('--multi', action='store_true', default=False)
 parser.add_argument('--union', action='store_true', default=False)
 parser.add_argument('-tdp', '--test_data_path', type=str, default='../data/AMOS2022_ct_pancreas')
-parser.add_argument('--num_clicks', type=int, default=5)
+parser.add_argument('--num_clicks', type=int, default=10)
 parser.add_argument('-mt', '--model_type', type=str, default='vit_b_ori')
 parser.add_argument('--device', type=str, default='cuda')
 parser.add_argument('--img_size', type=int, default=128)
@@ -36,12 +36,12 @@ if torch.cuda.is_available():
     torch.cuda.init()
 
 
-from utils import load_sam_2d_weight, randominteraction, get_next_click3D
+from utils import get_next_click3D_torch
 
 
 click_methods = {
-    'random': get_next_click3D,
-    'choose': randominteraction,
+    'random': get_next_click3D_torch,
+    'choose': None,
 }
 
 def finetune_model_predict3D(img3D, gt3D, sam_trans, sam_model_tune, device='cuda:0', click_method='random',num_clicks=5):
@@ -60,28 +60,16 @@ def finetune_model_predict3D(img3D, gt3D, sam_trans, sam_model_tune, device='cud
 
     iou_list = []
     dice_list = []
+    prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
+    low_res_masks = F.interpolate(prev_masks.float(), size=(args.img_size//4,args.img_size//4,args.img_size//4))
+    
     for num_click in range(num_clicks):
-       
-        if num_click == 0:
-            prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
-            low_res_masks = F.interpolate(prev_masks.float(), size=(args.img_size//4,args.img_size//4,args.img_size//4))
-        else:
-            # low_res_masks = torch.tensor(medsam_seg).reshape(1,1,256,256,256)  # (B, 1, H, W, D)
-            prev_masks = prev_masks
-            low_res_masks = low_res_masks
-
-        batch_points = []
-        batch_labels = []
 
         with torch.no_grad():
 
             image_embedding = sam_model_tune.image_encoder(img3D.to(device)) # (1, 384, 16, 16, 16)
 
-            for i in range(gt3D.shape[0]):
-                point_tor, label_tor = click_methods[click_method](prev_masks[i], gt3D[i])
-
-                batch_points.append(point_tor)
-                batch_labels.append(label_tor)
+            batch_points, batch_labels = click_methods[click_method](prev_masks.to(device), gt3D.to(device))
 
             points_co = torch.cat(batch_points, dim=0).to(device)  # 得到batch的每个点的坐标
             points_la = torch.cat(batch_labels, dim=0).to(device)  # 得到batch的每个点的label
@@ -140,28 +128,63 @@ def finetune_model_predict3D(img3D, gt3D, sam_trans, sam_model_tune, device='cud
                 return 2*volume_intersect / volume_sum
 
 
-            iou_list.append(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()))
+            iou_list.append(round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4))
 
-            dice_list.append(compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg))
-
-
+            dice_list.append(round(compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg), 4))
 
     # return medsam_seg
     return pred_list, points_co.cpu().numpy(), points_la.cpu().numpy(), iou_list, dice_list
 
+class NIIDataset_Union_ALL(Dataset): 
+    def __init__(self, paths, data_type='Tr', image_size=128, transform=None):
+        self.paths = paths
+        self.data_type = data_type
 
-from data_loader_all import NIIDataset_Union_ALL
+        self._set_file_paths(self.paths)
+        self.image_size = image_size
+        self.transform = transform
+    
+    def __len__(self):
+        return len(self.label_paths)
+
+    def __getitem__(self, index):
+
+        subject = tio.Subject(
+            image = tio.ScalarImage(self.image_paths[index]),
+            label = tio.LabelMap(self.label_paths[index]),
+        )
+        if self.transform:
+            subject = self.transform(subject)
+        
+        if subject.label.data.sum() < 1000:
+            return self.__getitem__(np.random.randint(self.__len__()))
+
+        return subject.image.data.clone().detach(), subject.label.data.clone().detach() # , self.image_paths[index]
+    
+    def _set_file_paths(self, paths):
+        self.image_paths = []
+        self.label_paths = []
+
+        for path in paths:
+            d = os.path.join(path, f'labels{self.data_type}')
+            if os.path.exists(d):
+                for name in os.listdir(d):
+                    base = os.path.basename(name).split('.nii.gz')[0]
+                    self.image_paths.append(f"{path}/images{self.data_type}/{base}.nii.gz")
+                    self.label_paths.append(f"{path}/labels{self.data_type}/{base}.nii.gz")
+
 
 # train_dataset = NIIDataset_Val(path='./dataset/MSD01_BrainTumor_flair', transform=tio.Compose(
 train_dataset = NIIDataset_Union_ALL(paths=[args.test_data_path,], data_type=args.data_type, transform=tio.Compose(
     [
-        tio.ToCanonical(),
-        tio.Resample(1),
-        tio.Resize((args.img_size,args.img_size,args.img_size)),
+        # tio.ToCanonical(),
+        # tio.Resample(1),
+        # tio.Resize((160,160,160)),
         # tio.CropOrPad(mask_name='crop_mask', target_shape=(256,256,256)), # crop only object region
-        tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)),
-        tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
-        tio.RandomFlip(axes=(0, 1, 2)),
+        # tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)),
+        # tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
+        tio.KeepLargestComponent(),
+        # tio.RandomFlip(axes=(0, 1, 2)),
         # tio.RemapLabels({2:1, 3:1}),
     ]
 ))
@@ -173,12 +196,7 @@ train_dataloader = DataLoader(
     shuffle=True
 )
 
-# checkpoint_path = '/nvme/guosizheng/gsz/sam_all/MedSAM3D/work_dir/SAM-ViT-B_multi/sam_model_latest.pth'
-# checkpoint_path = '/nvme/guosizheng/gsz/sam_all/MedSAM3D/work_dir/SAM-ViT-B_ori/sam_model_latest.pth'
-# checkpoint_path = '/nvme/guosizheng/gsz/sam_all/MedSAM3D/work_dir/SAM-ViT-B_multi_choose_using2dweight/sam_model_latest.pth'
 checkpoint_path = args.checkpoint_path
-
-
 
 device = args.device
 # sam_model_tune = sam_model_registry3D[args.model_type](checkpoint=checkpoint_path).to(device)
