@@ -33,7 +33,7 @@ np.random.seed(2023)
 
 # %% set up parser
 parser = argparse.ArgumentParser()
-parser.add_argument('--task_name', type=str, default='best_train')
+parser.add_argument('--task_name', type=str, default='train_p3')
 parser.add_argument('--click_type', type=str, default='random')
 parser.add_argument('--multi_click', action='store_true', default=False)
 parser.add_argument('--model_type', type=str, default='vit_b_ori')
@@ -62,14 +62,14 @@ parser.add_argument('--multi_gpu', action='store_true', default=False)
 # parser.add_argument('--step_size', type=int, default=5)
 # parser.add_argument('--gamma', type=float, default=0.5)
 parser.add_argument('--lr_scheduler', type=str, default='multisteplr')
-parser.add_argument('--step_size', type=list, default=[60, 90])
+parser.add_argument('--step_size', type=list, default=[95, 135])
 parser.add_argument('--gamma', type=float, default=0.1)
 
 
-parser.add_argument('--num_epochs', type=int, default=50)
+parser.add_argument('--num_epochs', type=int, default=150)
 parser.add_argument('--img_size', type=int, default=128)
 parser.add_argument('--batch_size', type=int, default=12)
-parser.add_argument('--accumulation_steps', type=int, default=20)
+parser.add_argument('--accumulation_steps', type=int, default=30)
 parser.add_argument('--lr', type=float, default=8e-4)
 parser.add_argument('--weight_decay', type=float, default=0.1)
 
@@ -119,8 +119,8 @@ def build_model(args):
 
     sam_model = sam_model_registry3D[args.model_type](checkpoint=None).to(device)
     # 复用2D的权重
-    
     sam_model = load_sam_2d_weight(args.checkpoint, sam_model)
+    
     if args.multi_gpu:
         sam_model = DDP(sam_model, device_ids=[args.rank], output_device=args.rank)
     # sam_model.train()
@@ -132,15 +132,17 @@ def build_model(args):
 from data_loader import NIIDataset_Union_ALL
 # from data_paths import img_datas
 from data_paths import img_datas
+# img_datas = ['/cpfs01/shared/gmai/medical_preprocessed/3d/iseg/two_class_all_resample_1mm/colon/WORD_ct',]
 
 def get_dataloaders(args):
     train_dataset = NIIDataset_Union_ALL(paths=img_datas, transform=tio.Compose([
-        # tio.ToCanonical(),
+        tio.ToCanonical(),
         # tio.Resample(1),
         # tio.Resize((128,128,128)),
-        # tio.CropOrPad(mask_name='crop_mask', target_shape=(args.img_size,args.img_size,args.img_size)), # crop only object region
-        # tio.KeepLargestComponent(),
-        # tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),
+        # tio.Clamp(-1000,1000),
+        # tio.KeepLargestComponent(),  # 速度很慢
+        tio.CropOrPad(mask_name='label', target_shape=(args.img_size,args.img_size,args.img_size)), # crop only object region
+        # tio.RandomAffine(degrees=[-np.pi/8, np.pi/8], scales=[0.8, 1.25]),  # 速度很慢
         tio.RandomFlip(axes=(0, 1, 2)),
         # tio.RemapLabels({2:1, 3:1}),
     ]))
@@ -411,18 +413,19 @@ class BaseTrainer:
                     print(f'Epoch: {epoch}, Step: {step}, Loss: {print_loss}, Dice: {print_dice}')
                     if print_dice > self.step_best_dice:
                         self.step_best_dice = print_dice
-                        self.save_checkpoint(
-                            epoch,
-                            sam_model.state_dict(),
-                            describe=f'{epoch}_step_dice:{print_dice}_best'
-                        )
+                        if print_dice > 0.85:
+                            self.save_checkpoint(
+                                epoch,
+                                sam_model.state_dict(),
+                                describe=f'{epoch}_step_dice:{print_dice}_best'
+                            )
                     if print_loss < self.step_best_loss:
                         self.step_best_loss = print_loss
-                        self.save_checkpoint(
-                            epoch,
-                            sam_model.state_dict(),
-                            describe=f'{epoch}_step_loss:{print_loss}_best'
-                        )
+                        # self.save_checkpoint(
+                        #     epoch,
+                        #     sam_model.state_dict(),
+                        #     describe=f'{epoch}_step_loss:{print_loss}_best'
+                        # )
             
         epoch_loss /= step
         # epoch_dice /= step

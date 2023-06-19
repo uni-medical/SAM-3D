@@ -409,7 +409,7 @@ class MaskDecoder3D(nn.Module):
         b, c, x, y, z = src.shape
 
         # Run the transformer
-        import IPython; IPython.embed()
+        # import IPython; IPython.embed()
         hs, src = self.transformer(src, pos_src, tokens)
         iou_token_out = hs[:, 0, :]
         mask_tokens_out = hs[:, 1 : (1 + self.num_mask_tokens), :]
@@ -475,17 +475,30 @@ if __name__ == "__main__":
 
 
     # ----------------------------------------------------------------------------------------------------------------------------------
-    model = MaskDecoder3D(transformer_dim=768)
+    # model = MaskDecoder3D(transformer_dim=768)
+    # # image = torch.randn(4,1,256,256,256)
+    # image_embeddings = torch.randn(4,768,16,16,16)
+    # image_pe = torch.randn(4,768,16,16,16)
+    # sparse_prompt_embeddings = torch.randn(4,2,768)
+    # dense_prompt_embeddings = torch.randn(4,768,16,16,16)
+
+
+    # output = model(image_embeddings,image_pe,sparse_prompt_embeddings,dense_prompt_embeddings,multimask_output=False)
+    # print(output[0].shape)
+    # print(output[1].shape)
+
+    # # torch.Size([4, 1, 64, 64, 64])
+    # # torch.Size([4, 1])
+
+    # ----------------------------------------------------------------------------------------------------------------------------------
+    model = MaskDecoder3D(transformer_dim=256)
     # image = torch.randn(4,1,256,256,256)
-    image_embeddings = torch.randn(4,768,16,16,16)
-    image_pe = torch.randn(4,768,16,16,16)
-    sparse_prompt_embeddings = torch.randn(4,2,768)
-    dense_prompt_embeddings = torch.randn(4,768,16,16,16)
+    image_embeddings = torch.randn(4,256,8,8,8)
+    image_pe = torch.randn(4,256,8,8,8)
+    sparse_prompt_embeddings = torch.randn(4,2,256)
+    dense_prompt_embeddings = torch.randn(4,256,8,8,8)
 
 
     output = model(image_embeddings,image_pe,sparse_prompt_embeddings,dense_prompt_embeddings,multimask_output=False)
     print(output[0].shape)
     print(output[1].shape)
-
-    # torch.Size([4, 1, 64, 64, 64])
-    # torch.Size([4, 1])

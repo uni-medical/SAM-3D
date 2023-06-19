@@ -10,8 +10,6 @@ import torch.nn.functional as F
 
 from typing import Optional, Tuple, Type
 
-# from .common import LayerNorm2d, MLPBlock
-
 
 class MLPBlock(nn.Module):
     def __init__(
@@ -204,13 +202,13 @@ class Block3D(nn.Module):
         x = self.norm1(x)
         # Window partition
         if self.window_size > 0:
-            H, W, D = x.shape[1], x.shape[2], x.shape[3]
-            x, pad_hwd = window_partition3D(x, self.window_size)
+            D, H, W = x.shape[1], x.shape[2], x.shape[3]
+            x, pad_dhw = window_partition3D(x, self.window_size)
 
         x = self.attn(x)
         # Reverse window partition
         if self.window_size > 0:
-            x = window_unpartition3D(x, self.window_size, pad_hwd, (H, W, D))
+            x = window_unpartition3D(x, self.window_size, pad_dhw, (D, H, W))
 
         x = shortcut + x
         x = x + self.mlp(self.norm2(x))
@@ -254,24 +252,24 @@ class Attention(nn.Module):
                 input_size is not None
             ), "Input size must be provided if using relative positional encoding."
             # initialize relative positional embeddings
-            self.rel_pos_h = nn.Parameter(torch.zeros(2 * input_size[0] - 1, head_dim))
-            self.rel_pos_w = nn.Parameter(torch.zeros(2 * input_size[1] - 1, head_dim))
-            self.rel_pos_d = nn.Parameter(torch.zeros(2 * input_size[2] - 1, head_dim))
+            self.rel_pos_d = nn.Parameter(torch.zeros(2 * input_size[0] - 1, head_dim))
+            self.rel_pos_h = nn.Parameter(torch.zeros(2 * input_size[1] - 1, head_dim))
+            self.rel_pos_w = nn.Parameter(torch.zeros(2 * input_size[2] - 1, head_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, H, W, D, _ = x.shape
+        B, D, H, W, _ = x.shape
         # qkv with shape (3, B, nHead, H * W, C)
-        qkv = self.qkv(x).reshape(B, H * W * D, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, D * H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         # q, k, v with shape (B * nHead, H * W, C)
-        q, k, v = qkv.reshape(3, B * self.num_heads, H * W * D, -1).unbind(0)
+        q, k, v = qkv.reshape(3, B * self.num_heads, D * H * W, -1).unbind(0)
 
         attn = (q * self.scale) @ k.transpose(-2, -1)
 
         if self.use_rel_pos:
-            attn = add_decomposed_rel_pos(attn, q, self.rel_pos_h, self.rel_pos_w, self.rel_pos_d, (H, W, D), (H, W, D))
+            attn = add_decomposed_rel_pos(attn, q, self.rel_pos_d, self.rel_pos_h, self.rel_pos_w, (D, H, W), (D, H, W))
 
         attn = attn.softmax(dim=-1)
-        x = (attn @ v).view(B, self.num_heads, H, W, D, -1).permute(0, 2, 3, 4, 1, 5).reshape(B, H, W, D, -1)
+        x = (attn @ v).view(B, self.num_heads, D, H, W, -1).permute(0, 2, 3, 4, 1, 5).reshape(B, D, H, W, -1)
         x = self.proj(x)
 
         return x
@@ -288,22 +286,23 @@ def window_partition3D(x: torch.Tensor, window_size: int) -> Tuple[torch.Tensor,
         windows: windows after partition with [B * num_windows, window_size, window_size, C].
         (Hp, Wp): padded height and width before partition
     """
-    B, H, W, D, C = x.shape
+    B, D, H, W, C = x.shape
 
+    pad_d = (window_size - D % window_size) % window_size
     pad_h = (window_size - H % window_size) % window_size
     pad_w = (window_size - W % window_size) % window_size
-    pad_d = (window_size - D % window_size) % window_size
+    
     if pad_h > 0 or pad_w > 0 or pad_d > 0:
         x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h, 0, pad_d))
     Hp, Wp, Dp = H + pad_h, W + pad_w, D + pad_d
 
-    x = x.view(B, Hp // window_size, window_size, Wp // window_size, window_size, Dp // window_size, window_size, C)
+    x = x.view(B, Dp // window_size, window_size, Hp // window_size, window_size, Wp // window_size, window_size, C)
     windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size, window_size, window_size, C)
-    return windows, (Hp, Wp, Dp)
+    return windows, (Dp, Hp, Wp)
 
 
 def window_unpartition3D(
-    windows: torch.Tensor, window_size: int, pad_hwd: Tuple[int, int, int], hwd: Tuple[int, int, int]
+    windows: torch.Tensor, window_size: int, pad_dhw: Tuple[int, int, int], dhw: Tuple[int, int, int]
 ) -> torch.Tensor:
     """
     Window unpartition into original sequences and removing padding.
@@ -316,14 +315,14 @@ def window_unpartition3D(
     Returns:
         x: unpartitioned sequences with [B, H, W, C].
     """
-    Hp, Wp, Dp = pad_hwd
-    H, W, D = hwd
-    B = windows.shape[0] // (Hp * Wp * Dp // window_size // window_size // window_size)
-    x = windows.view(B, Hp // window_size, Wp // window_size, Dp // window_size, window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(B, Hp, Wp, Dp, -1)
+    Dp, Hp, Wp = pad_dhw
+    D, H, W = dhw
+    B = windows.shape[0] // (Dp * Hp * Wp // window_size // window_size // window_size)
+    x = windows.view(B, Dp // window_size, Hp // window_size, Wp // window_size, window_size, window_size, window_size, -1)
+    x = x.permute(0, 1, 4, 2, 5, 3, 6, 7).contiguous().view(B, Hp, Wp, Dp, -1)
 
     if Hp > H or Wp > W or Dp > D:
-        x = x[:, :H, :W, :D, :].contiguous()
+        x = x[:, :D, :H, :W, :].contiguous()
     return x
 
 
@@ -363,9 +362,9 @@ def get_rel_pos(q_size: int, k_size: int, rel_pos: torch.Tensor) -> torch.Tensor
 def add_decomposed_rel_pos(
     attn: torch.Tensor,
     q: torch.Tensor,
+    rel_pos_d: torch.Tensor,
     rel_pos_h: torch.Tensor,
     rel_pos_w: torch.Tensor,
-    rel_pos_d: torch.Tensor,
     q_size: Tuple[int, int, int],
     k_size: Tuple[int, int, int],
 ) -> torch.Tensor:
@@ -383,22 +382,25 @@ def add_decomposed_rel_pos(
     Returns:
         attn (Tensor): attention map with added relative positional embeddings.
     """
-    q_h, q_w, q_d = q_size
-    k_h, k_w, k_d = k_size
+    q_d, q_h, q_w = q_size
+    k_d, k_h, k_w = k_size
+
+    Rd = get_rel_pos(q_d, k_d, rel_pos_d)
     Rh = get_rel_pos(q_h, k_h, rel_pos_h)
     Rw = get_rel_pos(q_w, k_w, rel_pos_w)
-    Rd = get_rel_pos(q_d, k_d, rel_pos_d)
-
+    
     B, _, dim = q.shape
-    r_q = q.reshape(B, q_h, q_w, q_d, dim)
-    rel_h = torch.einsum("bhwdc,hkc->bhwdk", r_q, Rh)
-    rel_w = torch.einsum("bhwdc,wkc->bhwdk", r_q, Rw)
-    rel_d = torch.einsum("bhwdc,dkc->bhwdk", r_q, Rd)
+    r_q = q.reshape(B, q_d, q_h, q_w, dim)
 
-    # TODO: 这里rel_h, rel_w, rel_d的维度，在哪个维度上添加呢？
+    rel_d = torch.einsum("bdhwc,dkc->bdhwk", r_q, Rd)
+    rel_h = torch.einsum("bdhwc,hkc->bdhwk", r_q, Rh)
+    rel_w = torch.einsum("bdhwc,wkc->bdhwk", r_q, Rw)
+    
+
+    
     attn = (
-        attn.view(B, q_h, q_w, q_d, k_h, k_w, k_d) + rel_h[:, :, :, :, None, None] + rel_w[:, :, :, None, :, None] + rel_d[:, :, :,None,None, :]
-    ).view(B, q_h * q_w * q_d, k_h * k_w * k_d)
+        attn.view(B, q_d, q_h, q_w, k_d, k_h, k_w) + rel_d[:, :, :, :, None, None] + rel_h[:, :, :, None, :, None] + rel_w[:, :, :,None,None, :]
+    ).view(B, q_d * q_h * q_w, k_d * k_h * k_w)
 
     return attn
 
@@ -449,21 +451,32 @@ if __name__ == "__main__":
     # # TODO: 改成输出 [1, 768, 16,16,16]
 
     # ----------------------------------------------------------------------------------------------------------------------------------
-    model = ImageEncoderViT3D()
-    input = torch.randn(4,1,256,256,256)
+    model = ImageEncoderViT3D(
+        img_size = 128,
+        patch_size = 16,
+        in_chans = 1,
+        embed_dim = 768,
+        depth = 12,
+        num_heads = 12,
+        mlp_ratio = 4.0,
+        out_chans = 256,
+    )
+    input = torch.randn(2,1,128,128,128)
 
     output = model(input)
     print(output.shape)
+
+    # torch.Size([2, 256, 8, 8, 8])
 
     # output_size = [4,256,16,16,16]
     # TODO: 改成输出 [4, 768, 16,16,16]
 
     # ----------------------------------------------------------------------------------------------------------------------------------
-    model = ImageEncoderViT3D(out_chans=768)
-    input = torch.randn(4,1,256,256,256)
+    # model = ImageEncoderViT3D(out_chans=512)
+    # input = torch.randn(2,1,128,128,128)
 
-    output = model(input)
-    print(output.shape)
+    # output = model(input)
+    # print(output.shape)
 
-    # output_size = [4,768,16,16,16]
+    # # output_size = [4,768,16,16,16]
     # TODO: 改成输出 [4, 768, 16,16,16]

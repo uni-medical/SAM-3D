@@ -9,7 +9,6 @@ from segment_anything.build_sam3D import sam_model_registry3D
 from segment_anything.utils.transforms3D import ResizeLongestSide3D
 from tqdm import tqdm
 import argparse
-import traceback
 from PIL import Image
 import SimpleITK as sitk
 import torch.nn.functional as F
@@ -34,7 +33,6 @@ args = parser.parse_args()
 
 if torch.cuda.is_available():
     torch.cuda.init()
-
 
 from utils import get_next_click3D_torch
 
@@ -156,10 +154,10 @@ class NIIDataset_Union_ALL(Dataset):
         if self.transform:
             subject = self.transform(subject)
         
-        if subject.label.data.sum() < 1000:
-            return self.__getitem__(np.random.randint(self.__len__()))
+        # if subject.label.data.sum() < 1000:
+        #     return self.__getitem__(np.random.randint(self.__len__()))
 
-        return subject.image.data.clone().detach(), subject.label.data.clone().detach() # , self.image_paths[index]
+        return subject.image.data.clone().detach(), subject.label.data.clone().detach() , self.image_paths[index]
     
     def _set_file_paths(self, paths):
         self.image_paths = []
@@ -214,7 +212,9 @@ sam_trans = ResizeLongestSide3D(sam_model_tune.image_encoder.img_size)
 all_iou_list = []
 all_dice_list = []  
 
-for image3D, gt3D in tqdm(train_dataloader):
+for image3D, gt3D, names in tqdm(train_dataloader):
+    
+    name = names[0]
 
     norm_transform = tio.ZNormalization(masking_method=lambda x: x > 0)
     image3D = norm_transform(image3D.squeeze(dim=1)) # (N, C, W, H, D)
@@ -224,6 +224,15 @@ for image3D, gt3D in tqdm(train_dataloader):
 
     seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict3D(image3D, gt3D, sam_trans, sam_model_tune, device=device, click_method=args.point_method, num_clicks=args.num_clicks)
     
+    for i, seg_mask in enumerate(seg_mask_list):
+        ori_im = tio.ScalarImage(name)
+        # ori_im = ori_im.numpy()[0]
+        ori_gt = tio.LabelMap(name.replace('images', 'labels'))
+        pred_mask = tio.LabelMap(tensor=torch.tensor(seg_mask[None,:]), affine=ori_gt.affine)
+        ori_im.save(f'./result/im.nii')
+        ori_gt.save(f'./result/gt.nii')
+        pred_mask.save(f'./result/pred_mask_{i}.nii')
+
     # print(points)
     # print(labels)
     # print(iou_list)
@@ -232,6 +241,8 @@ for image3D, gt3D in tqdm(train_dataloader):
     all_iou_list.append(per_iou)
     all_dice_list.append(max(dice_list))
     print(dice_list)
+    print(name)
+    break
 
 # print(all_iou_list)
 jls_extract_var = print
